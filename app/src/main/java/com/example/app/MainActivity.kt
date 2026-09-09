@@ -63,6 +63,17 @@ data class TodoItem(
 
 private const val API_BASE_URL = "http://10.0.2.2:8000"
 
+private val DEVICE_API_BASE_URL: String
+    get() = if (android.os.Build.FINGERPRINT.contains("generic") ||
+        android.os.Build.FINGERPRINT.startsWith("unknown") ||
+        android.os.Build.MODEL.contains("google_sdk") ||
+        android.os.Build.MODEL.contains("Emulator") ||
+        android.os.Build.MODEL.startsWith("sdk_gphone_")) {
+        "http://10.0.2.2:8000"
+    } else {
+        "http://192.168.1.78:8000"
+    }
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,7 +88,7 @@ class MainActivity : ComponentActivity() {
 
 private suspend fun loginUser(email: String, password: String): Result<String> = withContext(Dispatchers.IO) {
     try {
-        val url = URL("$API_BASE_URL/login")
+        val url = URL("${DEVICE_API_BASE_URL}/login")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 10_000
