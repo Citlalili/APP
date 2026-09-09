@@ -1,6 +1,7 @@
 package com.example.app
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -14,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -39,16 +40,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.app.ui.theme.APPTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 
 data class TodoItem(
     val text: String,
     val category: String,
     val done: Boolean = false
 )
+
+private const val API_BASE_URL = "http://10.0.2.2:8000"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,21 +75,92 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private suspend fun loginUser(email: String, password: String): Result<String> = withContext(Dispatchers.IO) {
+    try {
+        val url = URL("$API_BASE_URL/login")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            setRequestProperty("Accept", "application/json")
+        }
+
+        val payload = JSONObject().apply {
+            put("email", email)
+            put("password", password)
+        }.toString()
+
+        OutputStreamWriter(connection.outputStream).use { writer ->
+            writer.write(payload)
+            writer.flush()
+        }
+
+        val responseCode = connection.responseCode
+        val responseText = if (responseCode in 200..299) {
+            connection.inputStream.bufferedReader().use(BufferedReader::readText)
+        } else {
+            connection.errorStream?.bufferedReader()?.use(BufferedReader::readText) ?: ""
+        }
+
+        if (responseCode in 200..299) {
+            val json = JSONObject(responseText)
+            val token = json.optString("token", "")
+            if (token.isNotBlank()) {
+                Result.success(token)
+            } else {
+                Result.failure(IllegalStateException("No se recibió token válido"))
+            }
+        } else {
+            val message = try {
+                JSONObject(responseText).optString("detail", "Credenciales inválidas")
+            } catch (_: Exception) {
+                "Credenciales inválidas"
+            }
+            Result.failure(IllegalStateException(message))
+        }
+    } catch (exception: Exception) {
+        Log.e("AppLogin", "Login failed", exception)
+        Result.failure(exception)
+    }
+}
+
 @Composable
 fun AppRoot() {
     var isLoggedIn by rememberSaveable { mutableStateOf(false) }
-    var email by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("admin@app.com") }
+    var password by rememberSaveable { mutableStateOf("123456") }
+    var isLoading by rememberSaveable { mutableStateOf(false) }
+    var loginError by rememberSaveable { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
     if (!isLoggedIn) {
         LoginScreen(
             email = email,
             password = password,
+            isLoading = isLoading,
+            errorMessage = loginError,
             onEmailChange = { email = it },
             onPasswordChange = { password = it },
             onLoginClick = {
-                if (email.isNotBlank() && password.isNotBlank()) {
-                    isLoggedIn = true
+                if (email.isBlank() || password.isBlank()) {
+                    loginError = "Completa correo y contraseña"
+                    return@LoginScreen
+                }
+
+                isLoading = true
+                loginError = null
+
+                scope.launch {
+                    val result = loginUser(email.trim(), password.trim())
+                    result.onSuccess {
+                        isLoggedIn = true
+                        isLoading = false
+                    }.onFailure {
+                        loginError = it.message ?: "Error al iniciar sesión"
+                        isLoading = false
+                    }
                 }
             }
         )
@@ -84,8 +168,9 @@ fun AppRoot() {
         AppScreen(
             onLogout = {
                 isLoggedIn = false
-                email = ""
-                password = ""
+                email = "admin@app.com"
+                password = "123456"
+                loginError = null
             }
         )
     }
@@ -95,6 +180,8 @@ fun AppRoot() {
 fun LoginScreen(
     email: String,
     password: String,
+    isLoading: Boolean,
+    errorMessage: String?,
     onEmailChange: (String) -> Unit,
     onPasswordChange: (String) -> Unit,
     onLoginClick: () -> Unit,
@@ -130,17 +217,27 @@ fun LoginScreen(
                 value = password,
                 onValueChange = onPasswordChange,
                 label = { Text("Contraseña") },
+                visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth()
             )
+
+            if (!errorMessage.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = errorMessage,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
 
             Spacer(modifier = Modifier.height(20.dp))
 
             Button(
                 onClick = onLoginClick,
-                enabled = email.isNotBlank() && password.isNotBlank(),
+                enabled = !isLoading && email.isNotBlank() && password.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Entrar")
+                Text(if (isLoading) "Entrando..." else "Entrar")
             }
         }
     }
