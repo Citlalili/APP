@@ -69,7 +69,7 @@ private val DEVICE_API_BASE_URL: String
         android.os.Build.MODEL.contains("google_sdk") ||
         android.os.Build.MODEL.contains("Emulator") ||
         android.os.Build.MODEL.startsWith("sdk_gphone_")) {
-        "http://10.0.2.2:8000"
+        API_BASE_URL
     } else {
         "http://192.168.1.78:8000"
     }
@@ -137,9 +137,61 @@ private suspend fun loginUser(email: String, password: String): Result<String> =
     }
 }
 
+private suspend fun registerUser(email: String, password: String): Result<String> = withContext(Dispatchers.IO) {
+    try {
+        val url = URL("${DEVICE_API_BASE_URL}/register")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            setRequestProperty("Accept", "application/json")
+        }
+
+        val payload = JSONObject().apply {
+            put("email", email)
+            put("password", password)
+        }.toString()
+
+        OutputStreamWriter(connection.outputStream).use { writer ->
+            writer.write(payload)
+            writer.flush()
+        }
+
+        val responseCode = connection.responseCode
+        val responseText = if (responseCode in 200..299) {
+            connection.inputStream.bufferedReader().use(BufferedReader::readText)
+        } else {
+            connection.errorStream?.bufferedReader()?.use(BufferedReader::readText) ?: ""
+        }
+
+        if (responseCode in 200..299) {
+            val json = JSONObject(responseText)
+            val token = json.optString("token", "")
+            if (token.isNotBlank()) {
+                Result.success(token)
+            } else {
+                Result.failure(IllegalStateException("No se recibió token válido"))
+            }
+        } else {
+            val message = try {
+                JSONObject(responseText).optString("detail", "No se pudo crear la cuenta")
+            } catch (_: Exception) {
+                "No se pudo crear la cuenta"
+            }
+            Result.failure(IllegalStateException(message))
+        }
+    } catch (exception: Exception) {
+        Log.e("AppRegister", "Register failed", exception)
+        Result.failure(exception)
+    }
+}
+
 @Composable
 fun AppRoot() {
     var isLoggedIn by rememberSaveable { mutableStateOf(false) }
+    var isRegistering by rememberSaveable { mutableStateOf(false) }
     var email by rememberSaveable { mutableStateOf("admin@app.com") }
     var password by rememberSaveable { mutableStateOf("123456") }
     var isLoading by rememberSaveable { mutableStateOf(false) }
@@ -152,8 +204,10 @@ fun AppRoot() {
             password = password,
             isLoading = isLoading,
             errorMessage = loginError,
+            isRegistering = isRegistering,
             onEmailChange = { email = it },
             onPasswordChange = { password = it },
+            onToggleMode = { isRegistering = !isRegistering; loginError = null },
             onLoginClick = {
                 if (email.isBlank() || password.isBlank()) {
                     loginError = "Completa correo y contraseña"
@@ -164,12 +218,17 @@ fun AppRoot() {
                 loginError = null
 
                 scope.launch {
-                    val result = loginUser(email.trim(), password.trim())
+                    val result = if (isRegistering) {
+                        registerUser(email.trim(), password.trim())
+                    } else {
+                        loginUser(email.trim(), password.trim())
+                    }
+
                     result.onSuccess {
                         isLoggedIn = true
                         isLoading = false
                     }.onFailure {
-                        loginError = it.message ?: "Error al iniciar sesión"
+                        loginError = it.message ?: if (isRegistering) "Error al crear la cuenta" else "Error al iniciar sesión"
                         isLoading = false
                     }
                 }
@@ -179,6 +238,7 @@ fun AppRoot() {
         AppScreen(
             onLogout = {
                 isLoggedIn = false
+                isRegistering = false
                 email = "admin@app.com"
                 password = "123456"
                 loginError = null
@@ -193,8 +253,10 @@ fun LoginScreen(
     password: String,
     isLoading: Boolean,
     errorMessage: String?,
+    isRegistering: Boolean,
     onEmailChange: (String) -> Unit,
     onPasswordChange: (String) -> Unit,
+    onToggleMode: () -> Unit,
     onLoginClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -208,7 +270,7 @@ fun LoginScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Inicia sesión",
+                text = if (isRegistering) "Crear cuenta" else "Inicia sesión",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -248,7 +310,16 @@ fun LoginScreen(
                 enabled = !isLoading && email.isNotBlank() && password.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (isLoading) "Entrando..." else "Entrar")
+                Text(if (isLoading) if (isRegistering) "Creando..." else "Entrando..." else if (isRegistering) "Registrarse" else "Entrar")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onToggleMode,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isRegistering) "¿Ya tienes cuenta? Inicia sesión" else "¿No tienes cuenta? Regístrate")
             }
         }
     }
