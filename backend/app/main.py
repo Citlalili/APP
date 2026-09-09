@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 app = FastAPI(title="APP API", version="1.0.0")
@@ -28,6 +28,24 @@ tasks_db: list[dict[str, object]] = [
     {"id": 2, "text": "Revisar requisitos del backend", "category": "Trabajo", "done": True},
 ]
 
+sports_teams = {
+    "mlb": [
+        {"id": 1, "name": "New York Yankees", "city": "New York", "conference": "AL", "league": "mlb"},
+        {"id": 2, "name": "Los Angeles Dodgers", "city": "Los Angeles", "conference": "NL", "league": "mlb"},
+        {"id": 3, "name": "Boston Red Sox", "city": "Boston", "conference": "AL", "league": "mlb"},
+    ],
+    "nfl": [
+        {"id": 4, "name": "Kansas City Chiefs", "city": "Kansas City", "conference": "AFC", "league": "nfl"},
+        {"id": 5, "name": "Dallas Cowboys", "city": "Dallas", "conference": "NFC", "league": "nfl"},
+        {"id": 6, "name": "San Francisco 49ers", "city": "San Francisco", "conference": "NFC", "league": "nfl"},
+    ],
+    "soccer": [
+        {"id": 7, "name": "Real Madrid", "city": "Madrid", "conference": "LaLiga", "league": "soccer"},
+        {"id": 8, "name": "Barcelona", "city": "Barcelona", "conference": "LaLiga", "league": "soccer"},
+        {"id": 9, "name": "Manchester City", "city": "Manchester", "conference": "Premier League", "league": "soccer"},
+    ],
+}
+
 
 @app.get("/")
 def read_root() -> dict[str, str]:
@@ -37,6 +55,25 @@ def read_root() -> dict[str, str]:
 @app.get("/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok", "service": "app-api"}
+
+
+@app.get("/sports/leagues")
+def sports_leagues() -> list[str]:
+    return ["mlb", "nfl", "soccer"]
+
+
+@app.get("/sports/teams")
+def sports_teams_endpoint(
+    league: str = Query(default="mlb", description="mlb | nfl | soccer")
+) -> dict[str, object]:
+    normalized = league.lower().strip()
+    if normalized == "all":
+        return {"league": "all", "teams": [team for league_key in sports_teams.values() for team in league_key]}
+
+    if normalized not in sports_teams:
+        raise HTTPException(status_code=404, detail="Liga no disponible. Usa: mlb, nfl o soccer")
+
+    return {"league": normalized, "teams": sports_teams[normalized]}
 
 
 @app.post("/register")
