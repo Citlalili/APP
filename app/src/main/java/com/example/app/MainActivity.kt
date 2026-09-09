@@ -22,12 +22,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,7 +52,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -61,14 +62,24 @@ data class TodoItem(
     val done: Boolean = false
 )
 
+data class Team(
+    val id: Int,
+    val name: String,
+    val city: String,
+    val conference: String,
+    val league: String
+)
+
 private const val API_BASE_URL = "http://10.0.2.2:8000"
 
 private val DEVICE_API_BASE_URL: String
-    get() = if (android.os.Build.FINGERPRINT.contains("generic") ||
+    get() = if (
+        android.os.Build.FINGERPRINT.contains("generic") ||
         android.os.Build.FINGERPRINT.startsWith("unknown") ||
         android.os.Build.MODEL.contains("google_sdk") ||
         android.os.Build.MODEL.contains("Emulator") ||
-        android.os.Build.MODEL.startsWith("sdk_gphone_")) {
+        android.os.Build.MODEL.startsWith("sdk_gphone_")
+    ) {
         API_BASE_URL
     } else {
         "http://192.168.1.78:8000"
@@ -184,6 +195,54 @@ private suspend fun registerUser(email: String, password: String): Result<String
         }
     } catch (exception: Exception) {
         Log.e("AppRegister", "Register failed", exception)
+        Result.failure(exception)
+    }
+}
+
+private suspend fun fetchTeams(league: String): Result<List<Team>> = withContext(Dispatchers.IO) {
+    try {
+        val url = URL("${DEVICE_API_BASE_URL}/sports/teams?league=$league")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            setRequestProperty("Accept", "application/json")
+        }
+
+        val responseCode = connection.responseCode
+        val responseText = if (responseCode in 200..299) {
+            connection.inputStream.bufferedReader().use(BufferedReader::readText)
+        } else {
+            connection.errorStream?.bufferedReader()?.use(BufferedReader::readText) ?: ""
+        }
+
+        if (responseCode in 200..299) {
+            val json = JSONObject(responseText)
+            val array = json.optJSONArray("teams") ?: return@withContext Result.failure(IllegalStateException("No se encontraron equipos"))
+            val teams = mutableListOf<Team>()
+            for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                teams.add(
+                    Team(
+                        id = item.optInt("id", index),
+                        name = item.optString("name", "Equipo"),
+                        city = item.optString("city", ""),
+                        conference = item.optString("conference", ""),
+                        league = item.optString("league", league)
+                    )
+                )
+            }
+            Result.success(teams)
+        } else {
+            val message = try {
+                JSONObject(responseText).optString("detail", "No se pudo cargar la información")
+            } catch (_: Exception) {
+                "No se pudo cargar la información"
+            }
+            Result.failure(IllegalStateException(message))
+        }
+    } catch (exception: Exception) {
+        Log.e("AppTeams", "Fetch teams failed", exception)
         Result.failure(exception)
     }
 }
@@ -310,7 +369,9 @@ fun LoginScreen(
                 enabled = !isLoading && email.isNotBlank() && password.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (isLoading) if (isRegistering) "Creando..." else "Entrando..." else if (isRegistering) "Registrarse" else "Entrar")
+                Text(
+                    if (isLoading) if (isRegistering) "Creando..." else "Entrando..." else if (isRegistering) "Registrarse" else "Entrar"
+                )
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -327,6 +388,13 @@ fun LoginScreen(
 
 @Composable
 fun AppScreen(modifier: Modifier = Modifier, onLogout: (() -> Unit)? = null) {
+    var selectedSection by rememberSaveable { mutableStateOf("tasks") }
+
+    if (selectedSection == "sports") {
+        SportsScreen(onBack = { selectedSection = "tasks" })
+        return
+    }
+
     var taskInput by rememberSaveable { mutableStateOf("") }
     val tasks = remember {
         mutableStateListOf(
@@ -388,6 +456,26 @@ fun AppScreen(modifier: Modifier = Modifier, onLogout: (() -> Unit)? = null) {
                                 color = Color.White.copy(alpha = 0.85f)
                             )
                         }
+                    }
+                }
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Button(
+                        onClick = { selectedSection = "tasks" },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Tareas")
+                    }
+                    Button(
+                        onClick = { selectedSection = "sports" },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Equipos")
                     }
                 }
             }
@@ -495,6 +583,120 @@ fun AppScreen(modifier: Modifier = Modifier, onLogout: (() -> Unit)? = null) {
             }
 
             item { Spacer(modifier = Modifier.height(12.dp)) }
+        }
+    }
+}
+
+@Composable
+fun SportsScreen(onBack: () -> Unit) {
+    val leagues = listOf(
+        "mlb" to "MLB",
+        "nfl" to "NFL",
+        "soccer" to "Fútbol"
+    )
+    var selectedLeague by rememberSaveable { mutableStateOf("mlb") }
+    var teams by remember { mutableStateOf<List<Team>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(selectedLeague) {
+        isLoading = true
+        error = null
+        scope.launch {
+            val result = fetchTeams(selectedLeague)
+            result.onSuccess { teams = it }
+                .onFailure { error = it.message ?: "No se pudo cargar la información" }
+            isLoading = false
+        }
+    }
+
+    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Equipos",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Button(onClick = onBack) {
+                        Text("Volver")
+                    }
+                }
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    leagues.forEach { (leagueKey, leagueName) ->
+                        FilterChip(
+                            selected = selectedLeague == leagueKey,
+                            onClick = { selectedLeague = leagueKey },
+                            label = { Text(leagueName) }
+                        )
+                    }
+                }
+            }
+
+            if (isLoading) {
+                item {
+                    Text("Cargando equipos...")
+                }
+            }
+
+            if (!error.isNullOrBlank()) {
+                item {
+                    Text(
+                        text = error ?: "Error",
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            itemsIndexed(teams) { _, team ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = team.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${team.city} • ${team.conference}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = team.league.uppercase(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
         }
     }
 }
